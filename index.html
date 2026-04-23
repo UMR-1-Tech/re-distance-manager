@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RE Distance Manager | Modern Glass</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { font-family: 'Inter', sans-serif; }
+    body { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
+    .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); }
+    .glass-card { background: rgba(30,41,59,0.6); backdrop-filter: blur(12px); border: 1px solid rgba(148,163,184,0.15); }
+    .gradient-text { background: linear-gradient(to right, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .tab { transition: all 0.2s; }
+    .tab.active { background: rgba(59,130,246,0.5); color: white; }
+    .marker-pin { width: 24px; height: 24px; border-radius: 50% 50% 0 50%; transform: rotate(-45deg); background: #ef4444; border: 2px solid white; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-200">
+  <div class="container mx-auto px-4 py-6">
+    <!-- Header -->
+    <header class="flex flex-wrap justify-between items-center mb-8 glass p-4 rounded-2xl">
+      <div>
+        <h1 class="text-3xl font-extrabold gradient-text">RE Distance Manager</h1>
+        <p class="text-slate-400 text-sm">Real Estate Lead Intelligence</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <div id="db-status" class="text-xs px-3 py-1 rounded-full bg-red-900/30 border border-red-400/40">● DB offline</div>
+        <button onclick="toggleAdmin()" class="px-4 py-2 glass-card rounded-lg text-sm font-medium hover:bg-white/10">🔐 Admin</button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="flex flex-wrap gap-2 mb-6">
+      <button onclick="switchTab('search')" class="tab active px-4 py-2 rounded-lg text-sm font-medium glass-card">🔍 Search</button>
+      <button onclick="switchTab('add')" class="tab px-4 py-2 rounded-lg text-sm font-medium glass-card">➕ Add Realtor</button>
+      <button onclick="switchTab('manage')" class="tab px-4 py-2 rounded-lg text-sm font-medium glass-card">👥 Active</button>
+      <button onclick="switchTab('expired')" class="tab px-4 py-2 rounded-lg text-sm font-medium glass-card">⏰ Expired</button>
+      <button onclick="switchTab('import')" class="tab px-4 py-2 rounded-lg text-sm font-medium glass-card">📥 Import</button>
+    </nav>
+
+    <!-- Tab Contents -->
+    <div id="tab-search" class="tab-content">
+      <!-- Search form will be rendered by JS -->
+    </div>
+    <div id="tab-add" class="tab-content hidden">
+      <!-- Add/Edit form -->
+    </div>
+    <div id="tab-manage" class="tab-content hidden">
+      <!-- Active realtor table -->
+    </div>
+    <div id="tab-expired" class="tab-content hidden">
+      <!-- Expired list -->
+    </div>
+    <div id="tab-import" class="tab-content hidden">
+      <!-- Import tools -->
+    </div>
+  </div>
+
+  <!-- Simple modal for admin -->
+  <div id="admin-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50">
+    <div class="glass-card p-6 max-w-sm w-full rounded-2xl space-y-4">
+      <h2 class="text-xl font-bold">Admin Access</h2>
+      <input id="admin-pass" type="password" placeholder="Password" class="w-full bg-slate-800 border border-slate-600 rounded-lg p-2">
+      <div class="flex justify-end gap-3">
+        <button onclick="closeAdminModal()" class="glass-card px-4 py-2 rounded-lg">Cancel</button>
+        <button onclick="doAdminLogin()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-medium">Login</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="fixed bottom-4 right-4 z-50 transition-transform translate-y-20 opacity-0 pointer-events-none"></div>
+
+  <script>
+    // ═══════════════════════════════════════
+    //  GLOBAL STATE
+    // ═══════════════════════════════════════
+    const API = '/api';
+    let realtors = [], plans = [], fields = [];
+    let isAdmin = false;
+    let map, markers = [];
+
+    // ── Database status ──
+    async function checkDB() {
+      try {
+        const res = await fetch(`${API}/realtors?limit=1`);
+        if (res.ok) {
+          $('#db-status').className = 'text-xs px-3 py-1 rounded-full bg-green-900/30 border border-green-400/40';
+          $('#db-status').textContent = '● DB connected';
+        }
+      } catch {
+        $('#db-status').className = 'text-xs px-3 py-1 rounded-full bg-red-900/30 border border-red-400/40';
+        $('#db-status').textContent = '● DB offline';
+      }
+    }
+
+    // ── Fetch all data from API ──
+    async function fetchData() {
+      try {
+        const [rRes, pRes, fRes] = await Promise.all([
+          fetch(`${API}/realtors`),
+          fetch(`${API}/plans`),
+          fetch(`${API}/fields`)
+        ]);
+        realtors = await rRes.json();
+        plans = await pRes.json();
+        fields = await fRes.json();
+        // Sample plans if empty
+        if (!plans.length) {
+          const defaultPlans = [
+            { name: 'Basic', duration_months: null, company: 'Zaivex', color: 'blue', icon: '⚡' },
+            { name: 'Gold', duration_months: 12, company: 'Zaivex', color: 'amber', icon: '🥇' },
+            { name: 'Starter', duration_months: null, company: 'Realtor Uplift', color: 'green', icon: '🚀' },
+            { name: 'Professional', duration_months: 12, company: 'Realtor Uplift', color: 'blue', icon: '🏆' }
+          ];
+          plans = defaultPlans;
+        }
+      } catch (e) {
+        console.error(e);
+        toast('Error loading data. Is the server running?', 'error');
+      }
+    }
+
+    // ── UI Helpers ──
+    const $ = (id) => document.getElementById(id);
+    function toast(msg, type = 'info') {
+      const el = $('#toast');
+      el.textContent = msg;
+      el.className = `fixed bottom-4 right-4 z-50 transition-all px-4 py-2 rounded-lg shadow-lg ${
+        type === 'error' ? 'bg-red-600' : 'bg-green-600'} text-white opacity-100 translate-y-0`;
+      setTimeout(() => {
+        el.className = 'fixed bottom-4 right-4 z-50 transition-transform translate-y-20 opacity-0 pointer-events-none';
+      }, 3000);
+    }
+
+    // ── Tab Switching ──
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.getElementById(`tab-${tab}`).classList.remove('hidden');
+      document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+      event.target.classList.add('active');
+      if (tab === 'manage') renderManageList();
+      if (tab === 'expired') renderExpiredList();
+    }
+
+    // ── Admin Logic ──
+    async function toggleAdmin() {
+      if (isAdmin) { isAdmin = false; toast('Logged out'); return; }
+      document.getElementById('admin-modal').classList.remove('hidden');
+      document.getElementById('admin-modal').classList.add('flex');
+    }
+    function closeAdminModal() {
+      document.getElementById('admin-modal').classList.add('hidden');
+      document.getElementById('admin-modal').classList.remove('flex');
+    }
+    function doAdminLogin() {
+      const pass = $('#admin-pass').value;
+      if (pass === 'admin123') {  // simple password for demo
+        isAdmin = true;
+        toast('Admin mode active', 'info');
+        closeAdminModal();
+      } else {
+        toast('Wrong password', 'error');
+      }
+    }
+
+    // ── Active realtors list ──
+    function renderManageList() {
+      const container = $('#tab-manage');
+      const active = realtors.filter(r => !r.expiry_date || new Date(r.expiry_date) > new Date());
+      if (!active.length) {
+        container.innerHTML = `<div class="glass-card p-6 text-center text-slate-400">No active realtors yet.</div>`;
+        return;
+      }
+      let html = `<div class="glass-card overflow-x-auto"><table class="w-full text-sm"><thead class="text-left text-slate-400"><tr><th class="p-3">Name</th><th>Company</th><th>Plan</th><th>Expiry</th><th>Actions</th></tr></thead><tbody>`;
+      active.forEach(r => {
+        html += `<tr class="border-b border-slate-700/50">
+          <td class="p-3 font-medium">${r.name}</td>
+          <td>${r.company}</td>
+          <td>${r.plan}</td>
+          <td>${r.expiry_date ? new Date(r.expiry_date).toLocaleDateString() : 'Lifetime'}</td>
+          <td class="space-x-2">
+            <button class="glass-card px-2 py-1 rounded text-xs hover:bg-white/10" onclick="editRealtor('${r._id}')">✏️</button>
+            <button class="glass-card px-2 py-1 rounded text-xs hover:bg-red-500/20" onclick="deleteRealtor('${r._id}')">🗑️</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+      container.innerHTML = html;
+    }
+
+    // ── Expired list ──
+    function renderExpiredList() {
+      const container = $('#tab-expired');
+      const expired = realtors.filter(r => r.expiry_date && new Date(r.expiry_date) <= new Date());
+      if (!expired.length) {
+        container.innerHTML = `<div class="glass-card p-6 text-center text-slate-400">No expired plans.</div>`;
+        return;
+      }
+      let html = `<div class="space-y-3">`;
+      expired.forEach(r => {
+        html += `<div class="glass-card p-4 flex justify-between items-center">
+          <div><strong>${r.name}</strong> <span class="text-slate-400">Expired ${Math.ceil((new Date() - new Date(r.expiry_date)) / 86400000)}d ago</span></div>
+          <button class="bg-yellow-500/20 text-yellow-400 px-3 py-1 rounded text-sm" onclick="renewPlan('${r._id}')">Renew</button>
+        </div>`;
+      });
+      html += `</div>`;
+      container.innerHTML = html;
+    }
+
+    // ── CRUD operations via API ──
+    async function deleteRealtor(id) {
+      if (!confirm('Delete this realtor?')) return;
+      await fetch(`${API}/realtors`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ _id: id })
+      });
+      await fetchData();
+      renderManageList();
+    }
+
+    // ... (other functions like editRealtor, renewPlan, and search would be fleshed out) ...
+
+    // ── Initialization ──
+    window.onload = async () => {
+      await checkDB();
+      await fetchData();
+      // Render search tab by default
+    };
+  </script>
+</body>
+</html>
